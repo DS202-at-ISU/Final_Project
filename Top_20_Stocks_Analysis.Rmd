@@ -1,0 +1,294 @@
+
+---
+title: "Top 20 Stocks Analysis"
+author: "Sami Bensellam, Mohammad Al-Araidah"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyquant)
+```
+
+## Introduction
+
+The objective for this analysis is figuring out if the top 10 stocks have predictive capability for each other. In our exploratory data analysis we found that we could recognize some patterns between stocks and their predictive capability. Our main purpose is to see how a neural network is able to take the Top 10 stocks and how accurately it is able to predict data 
+
+## Data Collection
+
+```{r data-collection}
+# Install and load the tidyquant package
+library(tidyquant)
+
+# Define the stock tickers
+stock_tickers <- c("AAPL", "MSFT", "AMZN", "GOOGL", "META", 
+                   "BRK-A", "JNJ", "V", "WMT", "JPM")
+
+# Define the date range for the data
+start_date <- "2020-01-01"
+end_date <- "2023-01-01"  # Adjust this date as needed
+
+# Function to get stock data
+get_stock_data <- function(ticker, start_date, end_date) {
+  stock_data <- tq_get(ticker, from = start_date, to = end_date)
+  return(stock_data)
+}
+
+# Fetch data for each stock
+stock_data_list <- lapply(stock_tickers, get_stock_data, start_date, end_date)
+
+# Optionally, combine all data into one data frame
+combined_stock_data <- do.call(rbind, stock_data_list)
+print(combined_stock_data)
+```
+
+clean the data to only show open and close for every stock  Along with the volume and Symbol
+
+## Data Preparation
+
+```{r data-preparation}
+filtered_stock_data <- combined_stock_data[combined_stock_data$date >= as.Date("2018-01-01"), ]
+# Select only the 'date', 'open', 'close', and 'ticker' columns
+final_stock_data <- filtered_stock_data[, c("symbol", "date", "open", "close", "volume")]
+
+# Display the first few rows of the filtered data
+head(final_stock_data)
+
+```
+
+
+
+
+
+## Line Chart of Trading Volume
+
+We used these closing and open to figure the stock price. Then we see the volume of the stocks being traded meaning different changes in the stock and the amount of people trading the stocks. This will be a relevant aspect of the neural network we are trying to build.
+
+Analyzing the closing volumes for each stock to identify the sharp turns in price value
+```{r line-chart}
+# Load ggplot2 for plotting
+library(ggplot2)
+
+# Plotting the trading volume for each stock
+ggplot(final_stock_data, aes(x = date, y = volume, group = symbol, color = symbol)) +
+  geom_line() +
+  theme_minimal() +
+  labs(title = "Trading Volume of Stocks Over Time",
+       x = "Date",
+       y = "Volume",
+       color = "Stock ID") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(labels = scales::comma)
+
+```
+
+## Combined Opening Price Line Chart for All Stocks
+
+Visualizing the opening prices for all stocks in the dataset. We can see that because different stocks have different prices because of different market caps and different stock volume available.thus we need to normalize the stocks such that they have consistent values that can be used to compare.
+
+```{r opening-price-all-stocks, message=FALSE}
+# Plotting the opening price for all stocks
+ggplot(final_stock_data, aes(x = date, y = open, group = symbol, color = symbol)) +
+  geom_line() +
+  theme_minimal() +
+  labs(title = "Opening Prices of Stocks Over Time",
+       x = "Date",
+       y = "Opening Price (USD)",
+       color = "Stock Symbol") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  theme(legend.position = "bottom")
+
+```
+## Normalizing Opening Prices
+
+We will normalize the opening prices of each stock to have the same starting point for better comparability.basically making everystock have the same starting valueby simply multiplying the original value to equal one and multiplying the rest of the values by that same amount.
+
+```{r normalize-opening-prices}
+# Normalizing function
+normalize_prices <- function(prices) {
+  return (prices / prices[1]) * 100
+}
+
+# Apply normalization to each stock
+final_stock_data$normalized_open <- ave(final_stock_data$open, final_stock_data$symbol, FUN = normalize_prices)
+
+# Display the first few rows of the normalized data
+head(final_stock_data)
+```
+
+## Line Chart with Normalized Opening Prices
+
+Visualizing the normalized opening prices for all stocks to compare their relative performance.
+
+```{r line-chart-normalized-prices, message=FALSE}
+# Load ggplot2 for plotting
+library(ggplot2)
+
+# Plotting the normalized opening prices for all stocks
+ggplot(final_stock_data, aes(x = date, y = normalized_open, group = symbol, color = symbol)) +
+  geom_line() +
+  theme_minimal() +
+  labs(title = "Normalized Opening Prices of Stocks Over Time",
+       x = "Date",
+       y = "Normalized Price (Base 100)",
+       color = "Stock Symbol") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  theme(legend.position = "bottom")
+```
+
+
+
+## Predictive Modeling
+
+We created a neural network using tensorflow and keras in an unsupervised model where we use two layers with 50 nodes and used an 80 20 split to train/test data. Our final result is for a stock.
+
+```{r predictive-modeling}
+# Load necessary libraries
+library(keras)
+library(tensorflow)
+library(reticulate)
+library(dplyr)
+
+tf_config()
+
+# Assuming final_stock_data already exists and includes the following columns: 
+# date, symbol, open, normalized_open
+
+# Create lagged features for normalized open prices
+final_stock_data <- final_stock_data %>%
+  arrange(symbol, date) %>%
+  group_by(symbol) %>%
+  mutate(normalized_open_lag1 = lag(normalized_open, 1)) %>%
+  ungroup()
+
+# Remove rows with NAs (first row of each stock after lagging)
+final_stock_data <- na.omit(final_stock_data)
+
+# Convert Date to numeric (days since epoch)
+numeric_dates <- as.numeric(final_stock_data$date)
+
+# Calculate the quantile on numeric dates
+numeric_cutoff <- quantile(numeric_dates, 0.8, na.rm = TRUE)
+
+# Convert the numeric cutoff back to a Date
+cutoff_date <- as.Date(numeric_cutoff, origin = "1970-01-01")
+
+# Split the data into training and testing sets
+train_data <- final_stock_data %>% filter(date <= cutoff_date)
+test_data <- final_stock_data %>% filter(date > cutoff_date)
+
+# Prepare data for Keras
+train_matrix <- as.matrix(train_data$normalized_open_lag1)
+test_matrix <- as.matrix(test_data$normalized_open_lag1)
+
+train_labels <- train_data$normalized_open
+test_labels <- test_data$normalized_open
+
+# Number of features (just 1 in this simple example)
+num_features <- 1
+
+# Create neural network model
+model <- keras_model_sequential() %>%
+  layer_dense(units = 50, activation = 'relu', input_shape = c(num_features)) %>%
+  layer_dense(units = 50, activation = 'relu') %>%
+  layer_dense(units = 1)
+
+# Compile the model
+model %>% compile(
+  loss = 'mean_squared_error',
+  optimizer = optimizer_rmsprop(),
+  metrics = c('mean_absolute_error')
+)
+
+# Fit model to training data
+history <- model %>% fit(
+  x = train_matrix,
+  y = train_labels,
+  epochs = 50,
+  batch_size = 128,
+  validation_split = 0.2
+)
+
+# Evaluate model on test data
+evaluation <- model %>% evaluate(test_matrix, test_labels)
+
+# Print Mean Absolute Error (MAE)
+print(evaluation)
+
+
+```
+
+
+
+##Model
+
+Now that we created a model we would like to see the predictive results this model has thus we compare the predicted results with the actual prices.
+
+```{r}
+# Predict stocks
+predicted_normalized_open <- model %>% predict(test_matrix)
+
+# Add predictions
+test_data$predicted_normalized_open <- predicted_normalized_open
+```
+
+```{r}
+# Plot actual vs predicted prices
+ggplot(test_data, aes(x = date)) +
+  geom_line(aes(y = normalized_open, color = "Actual")) +
+  geom_line(aes(y = predicted_normalized_open, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Normalized Opening Prices",
+       x = "Date",
+       y = "Normalized Opening Price") +
+  scale_color_manual(values = c("Actual" = "blue", "Predicted" = "red")) +
+  theme_minimal()
+
+```
+## Plotting results
+Thus we plot both the predicted vs actual results.
+
+```{r}
+comparison_data <- test_data %>%
+  select(date, symbol, normalized_open) %>%
+  mutate(predicted_normalized_open = predicted_normalized_open)
+
+comparison_data <- comparison_data %>%
+  mutate(error = abs(normalized_open - predicted_normalized_open),
+    percent_error = (error / normalized_open) * 100)
+knitr::kable(head(comparison_data), caption = "Comparison of Actual and Predicted Normalized Opening Prices")
+
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(comparison_data, aes(x = normalized_open, y = predicted_normalized_open, color = symbol)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  labs(title = "Actual vs Predicted Normalized Opening Prices",
+       x = "Actual Normalized Open",
+       y = "Predicted Normalized Open",
+       color = "Stock Symbol") +
+  theme_minimal()
+```
+## Plotting
+We then plot the correlation and as we can see the model was extremely accurate in its predictions making it clear why Quant firms pursue this avenue. And the potential for trading capabilities using neural networks. Of couse this needs more work considering that there other effects to recieving profit margins on a predictive model. And the percentage of Error remains low and rarely goes below 10% error.
+```{r}
+ggplot(comparison_data, aes(x = date, y = percent_error, color = symbol)) +
+  geom_line() +
+  theme_minimal() +
+  labs(title = "Percentage Error Over Time",
+       x = "Date",
+       y = "Percentage Error",
+       color = "Stock Symbol") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")
+```
+## Conclusion
+ 
+Neural networks have strong capabilities in predictive analysis for stocks, and there is a rich avenue for making money in neural networks. I think that this avenue deserves to be explored further and we need to have a more rigorous and systematic approach to harness its potential. The field of financial market prediction using machine learning, particularly neural networks, is growing rapidly, driven by the increasing availability of data and advancements in computational power.
+
+## References
+
+tidyquant(Yahoo API) for stock , Keras, TensorFlow.
